@@ -15,8 +15,8 @@ import qs.Commons
 // resolved.conf, NetworkManager or the nextdns service.
 Panel {
   id: root
-  moduleName: "jon.nextdns"
-  ipcTarget: "jon.nextdns"
+  moduleName: "blacksheep.nextdns"
+  ipcTarget: "blacksheep.nextdns"
 
   implicitWidth: button.implicitWidth
   implicitHeight: bar ? bar.barSize : 26

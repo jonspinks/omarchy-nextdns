@@ -21,7 +21,7 @@ git clone https://github.com/jonspinks/omarchy-netconfig ~/Projects/omarchy-netc
 omarchy plugin add https://github.com/jonspinks/omarchy-nextdns --enable
 ```
 
-Update later with `omarchy plugin update jon.nextdns`.
+Update later with `omarchy plugin update blacksheep.nextdns`.
 
 ## Design notes
 
