@@ -36,18 +36,23 @@ Panel {
   readonly property string mode: stats.mode || "auto"
   readonly property string provider: stats.provider || "Cloudflare"
 
-  readonly property bool faulted: (active && !answering) || (mode === "on" && !active)
+  // Wanted but not filtering: NextDNS isn't forced off, yet DNS isn't going
+  // through a working NextDNS. That includes the automatic fallback on a
+  // network that blocks it, which is exactly when you'd want to know. Shown
+  // the way the stock widgets show trouble, by lighting the whole icon in the
+  // bar's active colour, rather than with a badge that's easy to miss.
+  readonly property bool alarming: installed && mode !== "off" && !(active && answering)
 
   readonly property string statusText: {
     if (!installed) return "Not installed"
-    if (active && answering) return "Filtering through profile " + (stats.profile || "—")
+    if (active && answering) return "Filtering"
     if (active) return "Not answering"
     return "Off — using " + (stats.resolver || "another resolver")
   }
 
   readonly property string modeText: {
-    if (mode === "on") return "Always on"
-    if (mode === "off") return "Always off"
+    if (mode === "on") return "On"
+    if (mode === "off") return "Forced off"
     return "Automatic — falls back when a network blocks it"
   }
 
@@ -55,17 +60,6 @@ Panel {
     if (!serviceUp) return "Stopped"
     return answering ? "Running" : "Running, not answering"
   }
-
-  // PanelHero renders `detail` as a bordered pill on the title row, and that
-  // pill is the one element the hero does NOT fit inside trailingInset -- a
-  // long string overflows straight under the trailing ToggleSwitch. Keep it to
-  // a badge, and only when the automatic policy has been overridden.
-  readonly property string modeBadge: {
-    if (mode === "on") return "FORCED ON"
-    if (mode === "off") return "FORCED OFF"
-    return ""
-  }
-
   function refresh() {
     if (statsProc.running) return
     statsProc.running = true
@@ -146,16 +140,17 @@ Panel {
     tooltipText: root.active
       ? "NextDNS — " + (root.answering ? "on" : "not answering")
       : "NextDNS — off, using " + (root.stats.resolver || "another resolver")
+        + (root.alarming ? "" : " (forced off)")
 
     iconComponent: Component {
       Item {
         NextDnsIcon {
           anchors.centerIn: parent
           iconSize: Style.space(11)
-          color: root.bar ? root.bar.barForeground : Color.foreground
-          badgeColor: root.bar ? root.bar.urgent : Color.urgent
+          color: root.alarming
+            ? (root.bar ? root.bar.urgent : Color.urgent)
+            : (root.bar ? root.bar.barForeground : Color.foreground)
           crossed: !root.active
-          warning: root.faulted
         }
       }
     }
@@ -199,15 +194,14 @@ Panel {
           fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
           title: "NextDNS"
           meta: root.statusText
-          detail: root.modeBadge
           iconOpacity: root.active ? 1.0 : 0.5
           iconComponent: Component {
             NextDnsIcon {
               iconSize: Style.font.display
-              color: root.bar ? root.bar.foreground : Color.foreground
-              badgeColor: root.bar ? root.bar.urgent : Color.urgent
+              color: root.alarming
+                ? (root.bar ? root.bar.urgent : Color.urgent)
+                : (root.bar ? root.bar.foreground : Color.foreground)
               crossed: !root.active
-              warning: root.faulted
             }
           }
           trailingControl: Component {
@@ -230,6 +224,10 @@ Panel {
           columnSpacing: Style.space(14)
           rowSpacing: Style.space(6)
 
+          // Mode first: who decides is the one thing here you might change.
+          InfoLabel { text: "Mode" }
+          InfoValue { text: root.modeText; Layout.fillWidth: true }
+
           InfoLabel { text: "Resolver" }
           InfoValue { text: root.stats.resolver || "—"; Layout.fillWidth: true }
 
@@ -242,8 +240,6 @@ Panel {
           InfoLabel { text: "Network" }
           InfoValue { text: root.stats.ssid || "—"; Layout.fillWidth: true }
 
-          InfoLabel { text: "Mode" }
-          InfoValue { text: root.modeText; Layout.fillWidth: true }
         }
 
         PanelSeparator { width: parent.width }
@@ -347,10 +343,10 @@ Panel {
           text: String(root.stats.last || "")
           wrapMode: Text.WordWrap
           textFormat: Text.PlainText
-          color: root.faulted
+          color: root.alarming
             ? (root.bar ? root.bar.urgent : Color.urgent)
             : (root.bar ? root.bar.foreground : Color.foreground)
-          opacity: root.faulted ? 1.0 : 0.6
+          opacity: root.alarming ? 1.0 : 0.6
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
         }
