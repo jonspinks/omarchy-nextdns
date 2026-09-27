@@ -10,7 +10,7 @@ import qs.Commons
 // DHCP resolver, and hands control to an automatic policy for networks that
 // block NextDNS outright.
 //
-// All privileged work goes through /usr/local/bin/nextdns-toggle under a scoped
+// All privileged work goes through /usr/local/libexec/blacksheep.nextdns/nextdns-toggle under a scoped
 // NOPASSWD rule; the shell itself runs unprivileged and never touches
 // resolved.conf, NetworkManager or the nextdns service.
 Panel {
@@ -76,14 +76,14 @@ Panel {
   function runToggle(action) {
     if (busy || !installed) return
     busy = true
-    toggleProc.command = ["sudo", "-n", "/usr/local/bin/nextdns-toggle", action]
+    toggleProc.command = ["sudo", "-n", "/usr/local/libexec/blacksheep.nextdns/nextdns-toggle", action]
     toggleProc.running = true
   }
 
   function setProvider(name) {
     if (busy || !installed) return
     busy = true
-    toggleProc.command = ["sudo", "-n", "/usr/local/bin/nextdns-toggle", "provider", name]
+    toggleProc.command = ["sudo", "-n", "/usr/local/libexec/blacksheep.nextdns/nextdns-toggle", "provider", name]
     toggleProc.running = true
   }
 

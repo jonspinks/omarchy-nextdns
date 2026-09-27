@@ -5,13 +5,13 @@
 # nextdns control socket; the only privileged verb the widget ever runs is
 # nextdns-toggle, through its scoped sudoers rule.
 
-STATE_DIR=/var/lib/nextdns-toggle
+STATE_DIR=/var/lib/blacksheep.nextdns
 OVERRIDE_FILE=$STATE_DIR/override
 PROVIDER_FILE=$STATE_DIR/provider
-LAST_RESULT=/run/nextdns-toggle/last-result
+LAST_RESULT=/run/blacksheep.nextdns/last-result
 NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
 NEXTDNS_CONF=/etc/nextdns.conf
-TOGGLE=/usr/local/bin/nextdns-toggle
+TOGGLE=/usr/local/libexec/blacksheep.nextdns/nextdns-toggle
 STUB=127.0.0.1
 
 # The servers omarchy-dns has the stack pointed at. Reading the file rather than

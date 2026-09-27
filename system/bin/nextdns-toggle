@@ -8,13 +8,13 @@
 #
 # Reached from the bar through a NOPASSWD sudoers rule, so it takes no arbitrary
 # input: every argument is matched against a fixed set and anything else exits.
-# Install to /usr/local/bin/nextdns-toggle, mode 0755, root-owned.
+# Install to /usr/local/libexec/blacksheep.nextdns/nextdns-toggle, mode 0755, root-owned.
 
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 
-APPLY=/usr/local/bin/nextdns-apply
-STATE_DIR=/var/lib/nextdns-toggle
+APPLY=/usr/local/libexec/blacksheep.nextdns/nextdns-apply
+STATE_DIR=/var/lib/blacksheep.nextdns
 OVERRIDE_FILE=$STATE_DIR/override
 PROVIDER_FILE=$STATE_DIR/provider
 NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf

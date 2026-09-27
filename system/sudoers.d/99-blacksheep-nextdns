@@ -9,5 +9,5 @@
 # Named 99- so it sorts last in /etc/sudoers.d: sudo applies the LAST matching
 # rule, so a blanket "%wheel ALL=(ALL:ALL) ALL" in a later-sorting file would
 # otherwise re-impose the password prompt this grant exists to avoid.
-@USER@ ALL=(root) NOPASSWD: /usr/local/bin/nextdns-toggle toggle, /usr/local/bin/nextdns-toggle on, /usr/local/bin/nextdns-toggle off, /usr/local/bin/nextdns-toggle auto
-@USER@ ALL=(root) NOPASSWD: /usr/local/bin/nextdns-toggle provider Cloudflare, /usr/local/bin/nextdns-toggle provider Google, /usr/local/bin/nextdns-toggle provider DHCP
+@USER@ ALL=(root) NOPASSWD: /usr/local/libexec/blacksheep.nextdns/nextdns-toggle toggle, /usr/local/libexec/blacksheep.nextdns/nextdns-toggle on, /usr/local/libexec/blacksheep.nextdns/nextdns-toggle off, /usr/local/libexec/blacksheep.nextdns/nextdns-toggle auto
+@USER@ ALL=(root) NOPASSWD: /usr/local/libexec/blacksheep.nextdns/nextdns-toggle provider Cloudflare, /usr/local/libexec/blacksheep.nextdns/nextdns-toggle provider Google, /usr/local/libexec/blacksheep.nextdns/nextdns-toggle provider DHCP

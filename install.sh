@@ -3,24 +3,33 @@
 #
 #   ./install.sh              install or update it
 #   ./install.sh --check      report what is in place, change nothing
-#   ./install.sh --uninstall  hand DNS back, then remove what this installed
+#   ./install.sh --uninstall  hand DNS back, then remove what this installed, and nothing else
 #
 # Run it as your normal user from the plugin folder
 # (~/.config/omarchy/plugins/blacksheep.nextdns); it calls sudo where it needs
-# to. Re-run it after `omarchy plugin update`, because the root-owned copies in
-# /usr/local/bin do not update themselves.
+# to. Re-run it after `omarchy plugin update`, because the root-owned copies do
+# not update themselves.
 #
 # Needs the nextdns CLI first (AUR): yay -S --needed nextdns
 #
-# What it installs, all root-owned:
-#   /usr/local/bin/nextdns-toggle, nextdns-apply           0755
-#   /etc/NetworkManager/dispatcher.d/90-nextdns-portal     0755
-#   /etc/systemd/system/nextdns-auto.service, .timer       0644, enabled
-#   /etc/systemd/system/nextdns.service                    0644, only if absent
-#   /etc/sudoers.d/99-nextdns-toggle                       0440, checked by visudo
-#   /etc/nextdns.conf                                      0644, only if absent,
-#                                                          with the profile id you enter
-#   /var/lib/nextdns-toggle/{override,provider}            0644
+# Everything it installs is under a name that belongs to this plugin:
+#   /usr/local/libexec/blacksheep.nextdns/nextdns-toggle, nextdns-apply   0755
+#   /etc/NetworkManager/dispatcher.d/90-blacksheep-nextdns                0755
+#   /etc/systemd/system/blacksheep-nextdns-auto.service, .timer          0644, timer enabled
+#   /etc/sudoers.d/99-blacksheep-nextdns                                 0440, checked by visudo
+#   /var/lib/blacksheep.nextdns/     0755: override, provider, and the ownership record
+# and, only when there is none already:
+#   /etc/systemd/system/nextdns.service   the NextDNS daemon's unit, enabled
+#   /etc/nextdns.conf                     with the profile id you enter; yours, never removed
+#
+# OWNERSHIP. The installer records a SHA-256 of every file it installs in
+# /var/lib/blacksheep.nextdns/installed. It replaces a file only if the file is
+# absent, is its own recorded copy unchanged, or is already byte-identical to
+# what it would install; anything else stops the install before it changes a
+# thing. --uninstall removes only files that still match their record, and
+# leaves anything changed since in place. It never guesses from a file name.
+# An existing nextdns.service or /etc/nextdns.conf is never recorded, so it is
+# never replaced or removed.
 
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
@@ -43,10 +52,15 @@ fi
 # The account name goes into a sudoers rule, so it must be a plain name.
 [[ $USER =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "unexpected user name: $USER" >&2; exit 1; }
 
-SCRIPTS=(nextdns-toggle nextdns-apply)
-DISPATCH=90-nextdns-portal
-SUDOERS=99-nextdns-toggle
-UNITS=(nextdns-auto.service nextdns-auto.timer)
+NS=blacksheep.nextdns
+LIBEXEC=/usr/local/libexec/$NS
+VAR=/var/lib/$NS
+RUN=/run/$NS
+RECORD=$VAR/installed
+UNITDIR=/etc/systemd/system
+DISPATCH=/etc/NetworkManager/dispatcher.d/90-blacksheep-nextdns
+SUDOERS=/etc/sudoers.d/99-blacksheep-nextdns
+DAEMON_UNIT=$UNITDIR/nextdns.service
 VERBS=("nextdns-toggle toggle" "nextdns-toggle on" "nextdns-toggle off" "nextdns-toggle auto"
   "nextdns-toggle provider Cloudflare" "nextdns-toggle provider Google"
   "nextdns-toggle provider DHCP")
@@ -62,7 +76,7 @@ check_verbs() {
   local verb
   for verb in "${VERBS[@]}"; do
     # shellcheck disable=SC2086
-    if sudo -n -l -l /usr/local/bin/$verb 2>/dev/null | grep -q '!authenticate'; then
+    if sudo -n -l -l $LIBEXEC/$verb 2>/dev/null | grep -q '!authenticate'; then
       ok "sudo -n $verb"
     else
       bad "sudo -n $verb"
@@ -70,23 +84,109 @@ check_verbs() {
   done
 }
 
+# ---------------------------------------------------------- ownership record
+
+# One "sha256  path" line per installed file. The record is root-owned and
+# world-readable; only root can change it.
+declare -A OWNED=()
+load_record() {
+  local sum path
+  [[ -r $RECORD ]] || return 0
+  while read -r sum path; do
+    [[ -n $path ]] && OWNED[$path]=$sum
+  done <"$RECORD"
+}
+# Most targets are world-readable; the sudoers drop-in is 0440, so it takes sudo.
+sum_of() {
+  { sha256sum "$1" 2>/dev/null || sudo sha256sum "$1" 2>/dev/null; } | cut -d' ' -f1
+}
+ours() { [[ -n ${OWNED[$1]:-} && $(sum_of "$1") == "${OWNED[$1]}" ]]; }
+
+# The files this install would place: "source|target|mode". The sudoers source
+# is generated for this account, so it is staged in a temporary file first.
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+sed "s/@USER@/$USER/g" system/sudoers.d/99-blacksheep-nextdns >"$STAGE/sudoers"
+PLAN=(
+  "system/bin/nextdns-toggle|$LIBEXEC/nextdns-toggle|0755"
+  "system/bin/nextdns-apply|$LIBEXEC/nextdns-apply|0755"
+  "system/dispatcher.d/90-blacksheep-nextdns|$DISPATCH|0755"
+  "system/systemd/blacksheep-nextdns-auto.service|$UNITDIR/blacksheep-nextdns-auto.service|0644"
+  "system/systemd/blacksheep-nextdns-auto.timer|$UNITDIR/blacksheep-nextdns-auto.timer|0644"
+  "$STAGE/sudoers|$SUDOERS|0440"
+)
+
+# Stop before changing anything if a target is somebody else's.
+preflight() {
+  local entry src target mode have conflicts=0
+  for entry in "${PLAN[@]}"; do
+    IFS='|' read -r src target mode <<<"$entry"
+    sudo test -e "$target" || continue
+    have=$(sum_of "$target")
+    [[ $have == "$(sha256sum "$src" | cut -d' ' -f1)" ]] && continue
+    [[ -n ${OWNED[$target]:-} && $have == "${OWNED[$target]}" ]] && continue
+    echo "  STOP $target exists and was not installed by this plugin (or has changed since)"
+    conflicts=1
+  done
+  if ((conflicts)); then
+    echo
+    echo "Nothing was changed. Move the files above aside yourself if they are safe" >&2
+    echo "to replace, then run install.sh again." >&2
+    exit 1
+  fi
+}
+
+write_record() {
+  local path
+  for path in "${!OWNED[@]}"; do
+    printf '%s  %s\n' "${OWNED[$path]}" "$path"
+  done | sort -k2 >"$STAGE/record"
+  sudo install -o root -g root -m 0644 "$STAGE/record" "$RECORD"
+}
+
+place() { # source target mode
+  local src=$1 target=$2 mode=$3 tmp
+  # Into place through a dot-named temporary in the same directory: sudo skips
+  # dot files in sudoers.d, and the rename is atomic for every other reader.
+  tmp="$(dirname "$target")/.$(basename "$target").new"
+  sudo install -o root -g root -m "$mode" "$src" "$tmp"
+  if [[ $target == "$SUDOERS" ]] && ! sudo visudo -c -f "$tmp" >/dev/null; then
+    sudo rm -f "$tmp"
+    echo "sudoers rule failed validation in place; not installed" >&2
+    exit 1
+  fi
+  sudo mv -f "$tmp" "$target"
+  OWNED[$target]=$(sha256sum "$src" | cut -d' ' -f1)
+  write_record
+  ok "$target"
+}
+
 # ---------------------------------------------------------------- check mode
 
 if [[ $MODE == check ]]; then
+  load_record
   echo "==> nextdns"
   command -v nextdns >/dev/null && ok "$(nextdns version 2>/dev/null | head -1)" ||
     bad "nextdns CLI not installed (yay -S --needed nextdns)"
-  echo "==> Scripts"
-  for f in "${SCRIPTS[@]}"; do
-    [[ -x /usr/local/bin/$f ]] && ok "/usr/local/bin/$f" || bad "/usr/local/bin/$f missing"
-    [[ -x /usr/local/bin/$f ]] && ! cmp -s "system/bin/$f" "/usr/local/bin/$f" &&
-      bad "/usr/local/bin/$f differs from this plugin's copy — re-run install.sh"
+  echo "==> Installed files"
+  ((${#OWNED[@]})) || bad "no ownership record at $RECORD — not installed"
+  for entry in "${PLAN[@]}"; do
+    IFS='|' read -r src target mode <<<"$entry"
+    # /etc/sudoers.d can't be read without a password; the verbs below prove
+    # the rule is in place instead.
+    if [[ $target == "$SUDOERS" ]]; then
+      echo "  --   $target (checked through the passwordless verbs below)"
+    elif [[ ! -e $target ]]; then
+      bad "$target missing"
+    elif [[ $(sum_of "$target") != "$(sha256sum "$src" | cut -d' ' -f1)" ]]; then
+      bad "$target differs from this plugin's copy — re-run install.sh"
+    else
+      ok "$target"
+    fi
   done
-  echo "==> Dispatcher"
-  [[ -x /etc/NetworkManager/dispatcher.d/$DISPATCH ]] && ok "$DISPATCH" || bad "$DISPATCH missing"
   echo "==> Units"
-  echo "  nextdns.service:    $(systemctl is-enabled nextdns.service 2>&1)"
-  echo "  nextdns-auto.timer: $(systemctl is-enabled nextdns-auto.timer 2>&1)"
+  echo "  nextdns.service:                $(systemctl is-enabled nextdns.service 2>&1)$([[ -n ${OWNED[$DAEMON_UNIT]:-} ]] && echo ' (installed by this plugin)')"
+  echo "  blacksheep-nextdns-auto.timer:  $(systemctl is-enabled blacksheep-nextdns-auto.timer 2>&1)"
   echo "==> Profile"
   if grep -qE '^profile [0-9a-f]+' /etc/nextdns.conf 2>/dev/null; then
     ok "/etc/nextdns.conf has a profile id"
@@ -101,33 +201,49 @@ fi
 # ------------------------------------------------------------ uninstall mode
 
 if [[ $MODE == uninstall ]]; then
+  load_record
+  if ((${#OWNED[@]} == 0)); then
+    echo "No ownership record at $RECORD, so there is nothing this script knows it"
+    echo "installed. Nothing was removed."
+    exit 0
+  fi
   # Hand DNS back first. Removing the scripts while the system still points at
   # 127.0.0.1 would leave every lookup going to a daemon nobody manages.
   echo "==> Handing DNS back"
-  if [[ -x /usr/local/bin/nextdns-toggle ]]; then
-    sudo /usr/local/bin/nextdns-toggle off && ok "switched to the fallback resolver"
+  if ours "$LIBEXEC/nextdns-toggle"; then
+    sudo "$LIBEXEC/nextdns-toggle" off && ok "switched to the fallback resolver"
   fi
-  sudo systemctl disable --now nextdns-auto.timer 2>/dev/null && ok "nextdns-auto.timer stopped" || true
-  echo "==> Removing"
-  sudo rm -f "/etc/sudoers.d/$SUDOERS" && ok "/etc/sudoers.d/$SUDOERS"
-  sudo rm -f "/etc/NetworkManager/dispatcher.d/$DISPATCH" && ok "$DISPATCH"
-  for u in "${UNITS[@]}"; do
-    sudo rm -f "/etc/systemd/system/$u" && ok "/etc/systemd/system/$u"
+  if ours "$UNITDIR/blacksheep-nextdns-auto.timer"; then
+    sudo systemctl disable --now blacksheep-nextdns-auto.timer 2>/dev/null && ok "policy timer stopped"
+  fi
+  if ours "$DAEMON_UNIT"; then
+    sudo systemctl disable --now nextdns.service 2>/dev/null && ok "nextdns.service stopped"
+  fi
+  echo "==> Removing what this plugin installed"
+  # The sudoers rule goes first, so the grant never outlives the scripts it names.
+  for path in "$SUDOERS" $(printf '%s\n' "${!OWNED[@]}" | grep -vxF "$SUDOERS" | sort); do
+    [[ -n ${OWNED[$path]:-} ]] || continue
+    if ! sudo test -e "$path"; then
+      ok "$path (already gone)"
+    elif [[ $(sum_of "$path") == "${OWNED[$path]}" ]]; then
+      sudo rm -f "$path" && ok "removed $path"
+    else
+      echo "  KEEP $path has changed since install; left in place"
+    fi
   done
   sudo systemctl daemon-reload
-  for f in "${SCRIPTS[@]}"; do
-    sudo rm -f "/usr/local/bin/$f" && ok "/usr/local/bin/$f"
-  done
-  sudo rm -rf /var/lib/nextdns-toggle /run/nextdns-toggle && ok "state"
+  sudo rmdir "$LIBEXEC" 2>/dev/null || true
+  # State: only the files this plugin writes, inside its own directories.
+  sudo rm -f "$VAR/override" "$VAR/provider" "$RECORD" "$RUN/last-result" "$RUN/lock"
+  sudo rmdir "$VAR" "$RUN" 2>/dev/null || true
   cat <<'LEFT'
 
 DNS is now on the fallback resolver, set through Omarchy's own omarchy-dns.
 Change it any time in Omarchy's settings.
 
 Left in place, because they are yours rather than this plugin's:
-  /etc/nextdns.conf                     your profile id
-  /etc/systemd/system/nextdns.service   the NextDNS daemon (stopped)
-  the nextdns package
+  /etc/nextdns.conf     your profile id
+  the nextdns package, and any nextdns.service you had before installing
 
 Then remove the widget itself:
   omarchy plugin remove blacksheep.nextdns
@@ -135,7 +251,7 @@ LEFT
   exit 0
 fi
 
-# ------------------------------------------------------------------ packages
+# -------------------------------------------------------------- install mode
 
 # Check the AUR prerequisite before installing anything, so a failed run
 # leaves nothing behind.
@@ -146,25 +262,30 @@ if ! command -v nextdns >/dev/null; then
   exit 1
 fi
 
+load_record
+echo "==> Checking for files this plugin doesn't own"
+preflight
+ok "no conflicts"
+
 echo "==> Packages"
 omarchy pkg add python curl 2>/dev/null ||
   sudo pacman -S --needed --noconfirm python curl
 ok "nextdns $(nextdns version 2>/dev/null | head -1)"
 
-# ------------------------------------------------------------------- profile
-
+# Your data: written only when absent, never recorded, never removed.
 echo "==> Profile"
 if grep -qE '^profile [0-9a-f]+' /etc/nextdns.conf 2>/dev/null; then
   ok "/etc/nextdns.conf already has a profile id"
+elif [[ -e /etc/nextdns.conf ]]; then
+  echo "  /etc/nextdns.conf exists but has no profile id. It is yours, so it is left"
+  echo "  alone: add a 'profile <id>' line to it (sudoedit /etc/nextdns.conf)."
 else
   echo "  Your NextDNS profile id is the short code on my.nextdns.io (e.g. abc123)."
   read -rp "  NextDNS profile id (blank to skip): " profile
   if [[ -n $profile ]]; then
     [[ $profile =~ ^[0-9a-f]{6}$ ]] || { echo "  that is not a NextDNS profile id" >&2; exit 1; }
-    tmp=$(mktemp)
-    sed -E "s/^profile .*/profile $profile/" system/examples/nextdns.conf.example >"$tmp"
-    sudo install -o root -g root -m 0644 "$tmp" /etc/nextdns.conf
-    rm -f "$tmp"
+    sed -E "s/^profile .*/profile $profile/" system/examples/nextdns.conf.example >"$STAGE/nextdns.conf"
+    sudo install -o root -g root -m 0644 "$STAGE/nextdns.conf" /etc/nextdns.conf
     ok "/etc/nextdns.conf written"
   else
     echo "  Skipped. Write /etc/nextdns.conf from system/examples/nextdns.conf.example"
@@ -172,67 +293,41 @@ else
   fi
 fi
 
-# ------------------------------------------------------------------- scripts
-
-echo "==> Scripts"
-for f in "${SCRIPTS[@]}"; do
-  sudo install -o root -g root -m 0755 "system/bin/$f" "/usr/local/bin/$f"
-  ok "/usr/local/bin/$f"
+echo "==> Installing"
+sudo install -d -o root -g root -m 0755 "$LIBEXEC" "$VAR"
+for entry in "${PLAN[@]}"; do
+  IFS='|' read -r src target mode <<<"$entry"
+  place "$src" "$target" "$mode"
 done
-sudo install -o root -g root -m 0755 "system/dispatcher.d/$DISPATCH" \
-  "/etc/NetworkManager/dispatcher.d/$DISPATCH"
-ok "/etc/NetworkManager/dispatcher.d/$DISPATCH"
 
-# ------------------------------------------------------------------- sudoers
-
-# Never install a sudoers file that does not parse: a broken drop-in locks sudo
-# out entirely, and there is no second chance on a machine with no root shell.
-echo "==> Sudoers rule for '$USER'"
-tmp=$(mktemp)
-sed "s/@USER@/$USER/g" "system/sudoers.d/$SUDOERS" >"$tmp"
-sudo install -o root -g root -m 0440 "$tmp" "/etc/sudoers.d/.$SUDOERS.new"
-rm -f "$tmp"
-if sudo visudo -c -f "/etc/sudoers.d/.$SUDOERS.new" >/dev/null; then
-  sudo mv "/etc/sudoers.d/.$SUDOERS.new" "/etc/sudoers.d/$SUDOERS"
-  ok "/etc/sudoers.d/$SUDOERS"
+# nextdns.service is the unit `nextdns install` generates. Install ours only
+# when there is none; an existing one is used exactly as it is, never enabled,
+# replaced or removed by this script. nextdns-apply starts it when it is needed.
+own_daemon=0
+if [[ -n ${OWNED[$DAEMON_UNIT]:-} ]] && ours "$DAEMON_UNIT"; then
+  own_daemon=1
+elif [[ ! -e $DAEMON_UNIT ]]; then
+  place system/systemd/nextdns.service "$DAEMON_UNIT" 0644
+  own_daemon=1
 else
-  sudo rm -f "/etc/sudoers.d/.$SUDOERS.new"
-  echo "sudoers rule failed validation; nothing installed" >&2
-  exit 1
+  ok "nextdns.service is yours; used as it is"
 fi
-
-# --------------------------------------------------------------------- state
+echo "  note this widget starts, stops and restarts nextdns.service to switch NextDNS"
+echo "       on and off and to repair a wedged daemon; that is what it is for."
 
 echo "==> State"
 # World-readable: the bar runs unprivileged and reads these to draw the widget.
-sudo install -d -o root -g root -m 0755 /var/lib/nextdns-toggle
-[[ -f /var/lib/nextdns-toggle/override ]] ||
-  echo auto | sudo tee /var/lib/nextdns-toggle/override >/dev/null
-[[ -f /var/lib/nextdns-toggle/provider ]] ||
-  echo Cloudflare | sudo tee /var/lib/nextdns-toggle/provider >/dev/null
-sudo chmod 0644 /var/lib/nextdns-toggle/{override,provider}
-ok "override $(cat /var/lib/nextdns-toggle/override), fallback $(cat /var/lib/nextdns-toggle/provider)"
-
-# --------------------------------------------------------------------- units
+sudo test -f "$VAR/override" || echo auto | sudo tee "$VAR/override" >/dev/null
+sudo test -f "$VAR/provider" || echo Cloudflare | sudo tee "$VAR/provider" >/dev/null
+sudo chmod 0644 "$VAR/override" "$VAR/provider"
+ok "override $(cat "$VAR/override"), fallback $(cat "$VAR/provider")"
 
 echo "==> Units"
-# nextdns.service is the unit `nextdns install` generates. Install ours only
-# when there is none, so an existing setup keeps its own.
-if [[ -e /etc/systemd/system/nextdns.service ]]; then
-  ok "nextdns.service already present; left as it is"
-else
-  sudo install -o root -g root -m 0644 system/systemd/nextdns.service /etc/systemd/system/
-  ok "nextdns.service installed"
-fi
-for u in "${UNITS[@]}"; do
-  sudo install -o root -g root -m 0644 "system/systemd/$u" /etc/systemd/system/
-done
 sudo systemctl daemon-reload
-sudo systemctl enable --now nextdns.service nextdns-auto.timer
-ok "nextdns.service    $(systemctl is-active nextdns.service)"
-ok "nextdns-auto.timer $(systemctl is-active nextdns-auto.timer)"
-
-# ------------------------------------------------------------------ checking
+((own_daemon)) && sudo systemctl enable --now nextdns.service
+sudo systemctl enable --now blacksheep-nextdns-auto.timer
+ok "nextdns.service               $(systemctl is-active nextdns.service)"
+ok "blacksheep-nextdns-auto.timer $(systemctl is-active blacksheep-nextdns-auto.timer)"
 
 echo
 echo "==> Checking"
@@ -242,8 +337,8 @@ echo "  nextdns-stats: $(scripts/nextdns-stats)"
 cat <<'NEXT'
 
 If any verb above says FAIL, look at what else is in /etc/sudoers.d: sudo
-applies the LAST matching rule, so a file that sorts after 99-nextdns-toggle
-and grants the same commands with a password wins over this one.
+applies the LAST matching rule, so a file that sorts after
+99-blacksheep-nextdns and grants the same commands with a password wins.
 
 Never use Omarchy's DNS provider picker while this is installed: it rewrites
 the resolver settings wholesale and drops NextDNS. The widget's own Off and

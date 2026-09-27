@@ -12,15 +12,15 @@
 # would drift from the Omarchy settings GUI and the bar's own DNS shortcut,
 # which read and write the same files.
 #
-# Install to /usr/local/bin/nextdns-apply, mode 0755, root-owned.
+# Install to /usr/local/libexec/blacksheep.nextdns/nextdns-apply, mode 0755, root-owned.
 
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 
-STATE_DIR=/var/lib/nextdns-toggle
+STATE_DIR=/var/lib/blacksheep.nextdns
 OVERRIDE_FILE=$STATE_DIR/override    # auto | on | off
 PROVIDER_FILE=$STATE_DIR/provider    # Cloudflare | Google | DHCP
-RUN_DIR=/run/nextdns-toggle
+RUN_DIR=/run/blacksheep.nextdns
 LAST_RESULT=$RUN_DIR/last-result
 LOCK=$RUN_DIR/lock
 
@@ -46,7 +46,7 @@ flock -w 30 9 || exit 0
 note() {
   printf '%s\n' "$*" > "$LAST_RESULT"
   chmod 0644 "$LAST_RESULT" 2>/dev/null
-  logger -t nextdns-apply "$*"
+  logger -t blacksheep-nextdns "$*"
 }
 
 override() { [[ -r $OVERRIDE_FILE ]] && cat "$OVERRIDE_FILE" || echo auto; }

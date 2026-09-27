@@ -4,4 +4,4 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/nextdns-apply auto
+ExecStart=/usr/local/libexec/blacksheep.nextdns/nextdns-apply auto

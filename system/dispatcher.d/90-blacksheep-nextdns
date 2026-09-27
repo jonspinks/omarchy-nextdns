@@ -3,17 +3,17 @@
 #
 # Joining a network is when NextDNS most often stops working -- a captive portal
 # or a guest network that only permits its own resolver blocks DoH, and NextDNS
-# then answers nothing at all. The paired nextdns-auto.timer handles the other
+# then answers nothing at all. The paired blacksheep-nextdns-auto.timer handles the other
 # half, noticing once you are through the portal and switching back; no
 # NetworkManager event fires when a portal sign-in succeeds.
 #
 # Install: sudo install -o root -g root -m 0755 \
-#            90-nextdns-portal /etc/NetworkManager/dispatcher.d/
+#            90-blacksheep-nextdns /etc/NetworkManager/dispatcher.d/
 
 IFACE="$1"
 ACTION="$2"
 
-APPLY=/usr/local/bin/nextdns-apply
+APPLY=/usr/local/libexec/blacksheep.nextdns/nextdns-apply
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 
@@ -32,7 +32,7 @@ esac
 # Hand off to a transient unit. The policy can spend several seconds on DNS and
 # DoH probes, and a dispatcher script that blocks that long stalls
 # NetworkManager's queue for every other event.
-systemd-run --no-block --unit="nextdns-apply-$$" --description="Apply NextDNS policy" \
+systemd-run --no-block --unit="blacksheep-nextdns-apply-$$" --description="Apply NextDNS policy" \
   "$APPLY" auto >/dev/null 2>&1
 
 # Never fail: a non-zero exit here just spams the NetworkManager journal.

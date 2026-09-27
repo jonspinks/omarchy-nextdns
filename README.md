@@ -56,7 +56,7 @@ omarchy restart shell
 
 `--uninstall` moves DNS to the fallback resolver **first**, so nothing is left
 pointed at a daemon nobody manages, then removes every file `install.sh` put in
-place. It leaves `/etc/nextdns.conf`, the NextDNS daemon's own unit and the
+place that is still as it installed it. It leaves `/etc/nextdns.conf`, the NextDNS daemon's own unit and the
 `nextdns` package, because those are yours.
 
 ## How it works
@@ -66,8 +66,8 @@ resolver points at it. All resolver changes go through Omarchy's own
 `omarchy-dns`, so the widget and Omarchy's settings never disagree about what
 is configured.
 
-`90-nextdns-portal`, a NetworkManager dispatcher script, re-evaluates on every
-network change, and `nextdns-auto.timer` re-evaluates every 30 s. The timer
+`90-blacksheep-nextdns`, a NetworkManager dispatcher script, re-evaluates on every
+network change, and `blacksheep-nextdns-auto.timer` re-evaluates every 30 s. The timer
 exists because **no NetworkManager event fires when you sign in to a captive
 portal**: something has to notice you are through and switch back.
 
@@ -90,18 +90,19 @@ plus which resolver "off" falls back to.
 ## Privilege model
 
 The bar runs as you. It reads state from world-readable files
-(`/var/lib/nextdns-toggle/`, `/run/nextdns-toggle/last-result`, the resolver
+(`/var/lib/blacksheep.nextdns/`, `/run/blacksheep.nextdns/last-result`, the resolver
 config Omarchy writes, and `/etc/nextdns.conf` for the profile id it shows)
 through `scripts/nextdns-stats`, which runs from the plugin folder as a fixed
 command.
 
 Everything that needs root goes through one `sudoers` drop-in,
-[`system/sudoers.d/99-nextdns-toggle`](system/sudoers.d/99-nextdns-toggle),
+[`system/sudoers.d/99-blacksheep-nextdns`](system/sudoers.d/99-blacksheep-nextdns),
 which lists every command with its exact arguments and has **no wildcards**:
 `nextdns-toggle toggle|on|off|auto`, and `nextdns-toggle provider` with only
 `Cloudflare`, `Google` or `DHCP`, never an arbitrary server.
 
-The scripts it grants are installed root-owned in `/usr/local/bin`, never run
+The scripts it grants are installed root-owned in
+`/usr/local/libexec/blacksheep.nextdns`, never run
 from the plugin folder, so nothing you can write is ever run as root. They keep
 their state and locks in root-owned directories, never in a shared temporary
 one. `install.sh` fills in your account name, validates the drop-in with
@@ -111,6 +112,27 @@ sudoers file that does not parse locks sudo out entirely.
 The drop-in is named `99-` because sudo applies the **last** matching rule, so a
 blanket `%wheel ALL=(ALL:ALL) ALL` sorting after it would bring the password
 prompt back.
+
+## What it owns
+
+Everything `install.sh` installs is under a name that belongs to this plugin
+(`blacksheep.nextdns` / `blacksheep-nextdns`), and it records a SHA-256 of every
+file it installs in `/var/lib/blacksheep.nextdns/installed`.
+
+- **Install** replaces a file only if it is absent, is the plugin's own
+  recorded copy unchanged, or is already byte-identical to what it would
+  install. Anything else stops the install before it changes a thing, and
+  names the file.
+- **Uninstall** removes only files that still match their record. A file
+  changed since install is left in place and reported. Without a record it
+  removes nothing: it never guesses from a file name.
+- **The NextDNS daemon.** `nextdns.service` is installed only when there is
+  none, and an existing one is never replaced, enabled or removed by
+  `install.sh`. The widget does **start, stop and restart it**, whoever
+  installed it: that is what switching NextDNS on and off, and repairing a
+  wedged daemon, means. Install this widget only if it should control your
+  NextDNS daemon.
+- **`/etc/nextdns.conf`** is written only when absent, and never removed.
 
 ## Design notes
 
