@@ -1,8 +1,47 @@
 # NextDNS — an Omarchy bar widget
 
-Whether NextDNS is the system resolver, which resolver replaces it when it is
-off, and an automatic fallback for networks that block it, such as captive
-portals and guest Wi-Fi.
+NextDNS that never strands you. Your NextDNS filtering in the bar, with a
+fallback that makes hotel and coffee-shop Wi-Fi just work.
+
+![NextDNS: filtering, and stepping aside for a captive portal until NextDNS can be reached again](preview.png)
+
+## What you get
+
+NextDNS is great until you join a network that blocks it. Then nothing loads,
+the Wi-Fi sign-in page never appears, and you're left digging through settings.
+This widget handles that for you.
+
+**See at a glance that you're protected.** The shield in the bar shows NextDNS
+is filtering. Click it to see your profile, the resolver in use and whether
+the NextDNS daemon is actually answering.
+
+![The icon in the bar: filtering, and stepped aside](screenshots/1-the-icon.png)
+
+![Filtering on café Wi-Fi](screenshots/2-filtering.png)
+
+**Captive portals just work.** On hotel or guest Wi-Fi that blocks NextDNS, it
+steps aside to a resolver the network allows, so the sign-in page can load. The
+moment NextDNS is reachable again, it switches back by itself: it checks every
+30 seconds, because nothing tells your laptop when you've signed in.
+
+![A hotel network blocks NextDNS: using Cloudflare until it doesn't](screenshots/3-captive-portal.png)
+
+**It fixes a stuck NextDNS.** Sometimes the NextDNS daemon stays running but
+stops answering. The widget tells that apart from a network that's blocking it,
+and simply restarts it.
+
+**You choose what "off" means.** Turn NextDNS off from the panel, and choose
+whether you fall back to Cloudflare, Google or your network's own resolver.
+
+![Switched off, falling back to Google](screenshots/4-off.png)
+
+**Plays nicely with Omarchy.** Every change goes through Omarchy's own DNS
+command, so the widget and Omarchy's settings always agree about what's in use.
+
+**Honest about what it touches.** A small, readable installer sets up the
+parts that need root. It installs everything under this plugin's own names and
+records exactly what it installed, so uninstalling hands your DNS back and
+removes just that.
 
 Installs as the bar widget `blacksheep.nextdns`.
 

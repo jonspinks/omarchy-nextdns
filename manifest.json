@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Jon",
   "license": "MIT",
-  "description": "NextDNS on/off, with an automatic fallback for networks that block it",
+  "description": "NextDNS that never strands you: filtering at a glance, and hotel or caf\u00e9 Wi-Fi that just works, switching back when it can.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "NextDNS",
-    "description": "Whether NextDNS is the system resolver, which resolver replaces it when off, and an automatic fallback for captive portals.",
+    "description": "Shows whether NextDNS is filtering, steps aside on networks that block it until it can come back, and lets you pick what off means.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right"
