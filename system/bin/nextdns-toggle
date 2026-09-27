@@ -1,0 +1,83 @@
+#!/bin/bash
+# Manual NextDNS override, callable from the bar widget.
+#
+#   nextdns-toggle toggle            flip forced-on <-> forced-off
+#   nextdns-toggle on|off            force a state, ignoring the automatic policy
+#   nextdns-toggle auto              hand control back to the policy and re-evaluate
+#   nextdns-toggle provider <name>   choose what "off" falls back to
+#
+# Reached from the bar through a NOPASSWD sudoers rule, so it takes no arbitrary
+# input: every argument is matched against a fixed set and anything else exits.
+# Install to /usr/local/bin/nextdns-toggle, mode 0755, root-owned.
+
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+
+APPLY=/usr/local/bin/nextdns-apply
+STATE_DIR=/var/lib/nextdns-toggle
+OVERRIDE_FILE=$STATE_DIR/override
+PROVIDER_FILE=$STATE_DIR/provider
+NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
+STUB=127.0.0.1
+
+mkdir -p "$STATE_DIR" 2>/dev/null
+chmod 0755 "$STATE_DIR" 2>/dev/null
+
+write_state() {
+  printf '%s\n' "$2" >"$1"
+  # The bar runs unprivileged and reads these directly to draw the widget.
+  chmod 0644 "$1" 2>/dev/null
+}
+
+# Whether NextDNS is what the stack is actually pointed at, read from the file
+# omarchy-dns writes rather than from our own override -- the first click after
+# an automatic change has to go the way the user sees, not the way we last asked.
+nextdns_active() {
+  [[ -f $NM_DNS_CONF ]] || return 1
+  awk -F= '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[global-dns-domain-\*\][[:space:]]*$/ { in_default = 1; next }
+    /^[[:space:]]*\[/ { in_default = 0 }
+    in_default && /^[[:space:]]*servers[[:space:]]*=/ {
+      value = $0; sub(/^[^=]*=/, "", value); print value; exit
+    }
+  ' "$NM_DNS_CONF" | tr -d '[:space:]' | grep -qx "$STUB"
+}
+
+case "${1:-toggle}" in
+toggle)
+  if nextdns_active; then new=off; else new=on; fi
+  ;;
+on) new=on ;;
+off) new=off ;;
+auto) new=auto ;;
+provider)
+  case "${2:-}" in
+    Cloudflare | Google | DHCP) ;;
+    *)
+      echo "usage: nextdns-toggle provider [Cloudflare|Google|DHCP]" >&2
+      exit 1
+      ;;
+  esac
+  write_state "$PROVIDER_FILE" "$2"
+  # Changing the fallback while sitting on it should move you there now; while
+  # NextDNS is up it is only a preference for next time, and re-running the DNS
+  # stack reload for no visible change would be gratuitous.
+  if nextdns_active; then
+    exit 0
+  fi
+  exec "$APPLY" fallback
+  ;;
+*)
+  echo "usage: nextdns-toggle [toggle|on|off|auto|provider <name>]" >&2
+  exit 1
+  ;;
+esac
+
+write_state "$OVERRIDE_FILE" "$new"
+
+case "$new" in
+on) exec "$APPLY" nextdns ;;
+off) exec "$APPLY" fallback ;;
+auto) exec "$APPLY" auto ;;
+esac

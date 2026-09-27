@@ -1,0 +1,7 @@
+[Unit]
+Description=Evaluate the NextDNS policy and repair a wedged daemon
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nextdns-apply auto

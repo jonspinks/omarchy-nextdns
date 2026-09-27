@@ -1,0 +1,243 @@
+#!/bin/bash
+# Apply the NextDNS on/off policy, and keep it healthy.
+#
+#   nextdns-apply nextdns    point the system at NextDNS (starting the daemon)
+#   nextdns-apply fallback   point the system at the chosen public/DHCP resolver
+#   nextdns-apply auto       decide which of those is right now, and heal a wedge
+#
+# All DNS stack changes go through `omarchy-dns` rather than being written here.
+# That script does not just set /etc/systemd/resolved.conf: it also rewrites
+# /etc/NetworkManager/conf.d/20-omarchy-dns.conf, sets per-connection nmcli DNS,
+# and reloads the two daemons in a specific order. Reimplementing any of that
+# would drift from the Omarchy settings GUI and the bar's own DNS shortcut,
+# which read and write the same files.
+#
+# Install to /usr/local/bin/nextdns-apply, mode 0755, root-owned.
+
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
+
+STATE_DIR=/var/lib/nextdns-toggle
+OVERRIDE_FILE=$STATE_DIR/override    # auto | on | off
+PROVIDER_FILE=$STATE_DIR/provider    # Cloudflare | Google | DHCP
+RUN_DIR=/run/nextdns-toggle
+LAST_RESULT=$RUN_DIR/last-result
+LOCK=$RUN_DIR/lock
+
+NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
+OMARCHY_DNS=/usr/bin/omarchy-dns
+STUB=127.0.0.1
+
+# NextDNS anycast. Probed with `curl --resolve` so the reachability test never
+# depends on the resolver it exists to diagnose -- behind a captive portal a
+# name lookup for dns.nextdns.io is exactly what does not work.
+DOH_IPS=(45.90.28.0 45.90.30.0)
+
+mkdir -p "$STATE_DIR" "$RUN_DIR" 2>/dev/null
+# World-readable: the bar runs unprivileged and reads these to draw the widget.
+chmod 0755 "$STATE_DIR" "$RUN_DIR" 2>/dev/null
+
+exec 9>"$LOCK"
+# NetworkManager fires dispatcher events in bursts and the timer can land in the
+# middle of one. Losing the race is not an error -- the winner applies the same
+# policy from the same state files a moment later.
+flock -w 30 9 || exit 0
+
+note() {
+  printf '%s\n' "$*" > "$LAST_RESULT"
+  chmod 0644 "$LAST_RESULT" 2>/dev/null
+  logger -t nextdns-apply "$*"
+}
+
+override() { [[ -r $OVERRIDE_FILE ]] && cat "$OVERRIDE_FILE" || echo auto; }
+
+provider() {
+  local p=""
+  [[ -r $PROVIDER_FILE ]] && p=$(cat "$PROVIDER_FILE")
+  case "$p" in
+    Cloudflare | Google | DHCP) printf '%s' "$p" ;;
+    *) printf '%s' Cloudflare ;;
+  esac
+}
+
+# Which resolver the stack is pointed at right now, read from the same file
+# omarchy-dns writes. `omarchy dns` would answer "Custom" for NextDNS and for
+# any other hand-entered server alike, so read the servers themselves.
+nm_servers() {
+  [[ -f $NM_DNS_CONF ]] || return 0
+  awk -F= '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[global-dns-domain-\*\][[:space:]]*$/ { in_default = 1; next }
+    /^[[:space:]]*\[/ { in_default = 0 }
+    in_default && /^[[:space:]]*servers[[:space:]]*=/ {
+      value = $0; sub(/^[^=]*=/, "", value); print value; exit
+    }
+  ' "$NM_DNS_CONF"
+}
+
+current_state() {
+  local s
+  s=$(nm_servers | tr -d '[:space:]')
+  case "$s" in
+    "")            echo DHCP ;;
+    "$STUB"|"$STUB",*) echo nextdns ;;
+    1.1.1.1*)      echo Cloudflare ;;
+    8.8.8.8*)      echo Google ;;
+    *)             echo other ;;
+  esac
+}
+
+# A real DNS query rather than `systemctl is-active`: the failure this guards
+# against is a daemon that stays active and bound while answering nothing.
+dns_probe() {
+  local server=$1 timeout=${2:-3}
+  python3 - "$server" "$timeout" <<'PY'
+import socket, struct, sys
+server, t = sys.argv[1], float(sys.argv[2])
+pkt = struct.pack(">HHHHHH", 0x4242, 0x0100, 1, 0, 0, 0) \
+    + b"".join(bytes([len(p)]) + p.encode() for p in "example.com".split(".")) + b"\x00" \
+    + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(t)
+try:
+    s.sendto(pkt, (server, 53)); s.recvfrom(4096)
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# True when NextDNS's DoH endpoint is reachable *and* presents a valid
+# certificate. A captive portal that intercepts 443 fails the handshake, which
+# is precisely the signal we want; the endpoint answers a bare GET with 400,
+# so any HTTP status at all means we got through to the real thing.
+doh_reachable() {
+  local ip
+  for ip in "${DOH_IPS[@]}"; do
+    curl -s -m 4 -o /dev/null --resolve "dns.nextdns.io:443:$ip" \
+      https://dns.nextdns.io/ && return 0
+  done
+  return 1
+}
+
+# The resolver the network itself handed out, read from the DHCP lease rather
+# than from the active config -- while NextDNS is set, nmcli's ipv4.dns holds
+# 127.0.0.1 and ignore-auto-dns hides the offered servers.
+dhcp_dns() {
+  local dev type state
+  while IFS=: read -r dev type state; do
+    [[ -n $dev && $state == connected ]] || continue
+    case "$type" in wifi | ethernet) ;; *) continue ;; esac
+    nmcli -t -f DHCP4.OPTION device show "$dev" 2>/dev/null |
+      sed -n 's/.*domain_name_servers = //p' | tr ' ' '\n' | head -1
+    return
+  done < <(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null)
+}
+
+apply_nextdns() {
+  systemctl is-active --quiet nextdns || systemctl start nextdns
+
+  # Verify before switching, never after. resolved is configured with 127.0.0.1
+  # as its only server, so pointing it there while nothing is listening takes
+  # every name lookup on the machine down -- and the FallbackDNS line does not
+  # rescue it, resolved only falls back when no server is configured at all.
+  local i ok=false
+  for ((i = 0; i < 8; i++)); do
+    if dns_probe "$STUB" 2; then ok=true; break; fi
+    sleep 1
+  done
+  if [[ $ok != true ]]; then
+    note "nextdns is not answering on ${STUB}:53 — staying on $(provider)"
+    apply_fallback
+    return 1
+  fi
+
+  if [[ $(current_state) != nextdns ]]; then
+    "$OMARCHY_DNS" Custom <<<"$STUB" >/dev/null || {
+      note "omarchy-dns Custom failed"
+      return 1
+    }
+  fi
+  note ""
+}
+
+apply_fallback() {
+  local want
+  want=$(provider)
+
+  # Move resolved off 127.0.0.1 first, stop the daemon second. The other order
+  # leaves a window with the stub pointed at a dead port.
+  if [[ $(current_state) != "$want" ]]; then
+    "$OMARCHY_DNS" "$want" >/dev/null || {
+      note "omarchy-dns $want failed"
+      return 1
+    }
+  fi
+  systemctl is-active --quiet nextdns && systemctl stop nextdns
+  return 0
+}
+
+# Decide what should be true right now, and repair what is not.
+#
+# The interesting case is telling two look-alike failures apart. Both present as
+# "127.0.0.1:53 stopped answering":
+#
+#   * the daemon has wedged -- it stays alive and bound but loses every upstream
+#     DoH connection and never rebuilds them (observed on nextdns 1.47.3, with a
+#     six-figure receive backlog on its socket). Nothing crashes, so systemd's
+#     Restart= never fires. The fix is a restart.
+#   * the network blocks DoH -- a captive portal, or a guest network that only
+#     allows its own resolver. Restarting achieves nothing; the fix is to step
+#     aside until we are through.
+#
+# Reaching NextDNS's DoH endpoint from this host separates them exactly.
+policy() {
+  local mode state
+  mode=$(override)
+  state=$(current_state)
+
+  if [[ $state == nextdns ]]; then
+    dns_probe "$STUB" 3 && { note ""; return 0; }
+    sleep 2
+    dns_probe "$STUB" 3 && { note ""; return 0; }
+
+    if doh_reachable; then
+      note "nextdns stopped answering while its upstream was reachable — restarting"
+      systemctl restart nextdns
+      return 0
+    fi
+
+    # DoH is unreachable. Only step aside if the network's own resolver works;
+    # otherwise this is plain "no internet" and switching provider would just
+    # trade one dead resolver for another.
+    if [[ $mode == auto ]]; then
+      local local_dns
+      local_dns=$(dhcp_dns)
+      if [[ -n $local_dns ]] && dns_probe "$local_dns" 3; then
+        note "This network blocks NextDNS — using $(provider) until it does not"
+        apply_fallback
+        return 0
+      fi
+    fi
+    return 0
+  fi
+
+  # On the fallback. Come back the moment NextDNS is reachable again, which is
+  # what makes signing in to a portal look like it fixed itself. `on` lands here
+  # too: apply_nextdns falls back rather than strand the machine when the daemon
+  # will not answer, so a forced-on NextDNS has to keep retrying to recover.
+  if [[ $mode == auto || $mode == on ]] && doh_reachable; then
+    note ""
+    apply_nextdns
+  fi
+  return 0
+}
+
+case "${1:-auto}" in
+nextdns)  apply_nextdns ;;
+fallback) apply_fallback ;;
+auto)     policy ;;
+*)
+  echo "usage: nextdns-apply [nextdns|fallback|auto]" >&2
+  exit 1
+  ;;
+esac

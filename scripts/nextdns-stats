@@ -1,0 +1,95 @@
+#!/bin/bash
+# Emit NextDNS state as a single JSON object for the bar plugin.
+#
+# Unprivileged. Everything here is read from world-readable files or from the
+# nextdns control socket; the only privileged verb the widget ever runs is
+# nextdns-toggle, through its scoped sudoers rule.
+
+STATE_DIR=/var/lib/nextdns-toggle
+OVERRIDE_FILE=$STATE_DIR/override
+PROVIDER_FILE=$STATE_DIR/provider
+LAST_RESULT=/run/nextdns-toggle/last-result
+NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
+NEXTDNS_CONF=/etc/nextdns.conf
+TOGGLE=/usr/local/bin/nextdns-toggle
+STUB=127.0.0.1
+
+# The servers omarchy-dns has the stack pointed at. Reading the file rather than
+# asking `omarchy dns` because that answers "Custom" for NextDNS and for any
+# other hand-entered server alike.
+servers=""
+if [[ -f $NM_DNS_CONF ]]; then
+  servers=$(awk -F= '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[global-dns-domain-\*\][[:space:]]*$/ { in_default = 1; next }
+    /^[[:space:]]*\[/ { in_default = 0 }
+    in_default && /^[[:space:]]*servers[[:space:]]*=/ {
+      value = $0; sub(/^[^=]*=/, "", value); print value; exit
+    }
+  ' "$NM_DNS_CONF" | tr -d '[:space:]')
+fi
+
+active=false
+[[ $servers == "$STUB" ]] && active=true
+
+case "$servers" in
+  "")        resolver="DHCP" ;;
+  1.1.1.1*)  resolver="Cloudflare" ;;
+  8.8.8.8*)  resolver="Google" ;;
+  "$STUB")   resolver="NextDNS (127.0.0.1)" ;;
+  *)         resolver="$servers" ;;
+esac
+
+mode=auto
+[[ -r $OVERRIDE_FILE ]] && mode=$(<"$OVERRIDE_FILE")
+provider=Cloudflare
+[[ -r $PROVIDER_FILE ]] && provider=$(<"$PROVIDER_FILE")
+last=""
+[[ -r $LAST_RESULT ]] && last=$(<"$LAST_RESULT")
+
+installed=false
+[[ -x $TOGGLE ]] && installed=true
+
+service=false
+systemctl is-active --quiet nextdns && service=true
+
+# Profile id: from the running daemon when it is up, from its config when not.
+profile=$(awk '$1 == "profile" { print $2; exit }' "$NEXTDNS_CONF" 2>/dev/null)
+
+# The failure this catches is a daemon that stays active and bound to
+# 127.0.0.1:53 while answering nothing, so `systemctl is-active` cannot see it.
+# One short strike only -- the 30s supervisor decides whether to act, this just
+# stops the widget claiming everything is fine for half a minute.
+answering=false
+if [[ $service == true ]]; then
+  python3 - "$STUB" <<'PY' && answering=true
+import socket, struct, sys
+pkt = struct.pack(">HHHHHH", 0x4242, 0x0100, 1, 0, 0, 0) \
+    + b"".join(bytes([len(p)]) + p.encode() for p in "example.com".split(".")) + b"\x00" \
+    + struct.pack(">HH", 1, 1)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(1.5)
+try:
+    s.sendto(pkt, (sys.argv[1], 53)); s.recvfrom(4096)
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+fi
+
+ssid=$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | sed -n 's/^yes://p' | head -1)
+
+# JSON string body: backslash first, then quote, then the control characters
+# an SSID can legally contain.
+esc() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  printf '%s' "$s"
+}
+
+printf '{"installed":%s,"active":%s,"service":%s,"answering":%s,"mode":"%s","provider":"%s","resolver":"%s","profile":"%s","ssid":"%s","last":"%s"}\n' \
+  "$installed" "$active" "$service" "$answering" \
+  "$(esc "$mode")" "$(esc "$provider")" "$(esc "$resolver")" \
+  "$(esc "$profile")" "$(esc "$ssid")" "$(esc "$last")"

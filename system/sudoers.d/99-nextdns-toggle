@@ -1,0 +1,13 @@
+# Let the Omarchy bar's NextDNS widget switch the system resolver without a
+# password. Every command is listed with its exact arguments, so the grant
+# cannot be reused for anything else -- in particular `provider` only accepts
+# the three names the widget offers, never an arbitrary server. No wildcards.
+#
+# install.sh replaces @USER@ with the account that runs it and validates the
+# result with `visudo -c` before installing it.
+#
+# Named 99- so it sorts last in /etc/sudoers.d: sudo applies the LAST matching
+# rule, so a blanket "%wheel ALL=(ALL:ALL) ALL" in a later-sorting file would
+# otherwise re-impose the password prompt this grant exists to avoid.
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/nextdns-toggle toggle, /usr/local/bin/nextdns-toggle on, /usr/local/bin/nextdns-toggle off, /usr/local/bin/nextdns-toggle auto
+@USER@ ALL=(root) NOPASSWD: /usr/local/bin/nextdns-toggle provider Cloudflare, /usr/local/bin/nextdns-toggle provider Google, /usr/local/bin/nextdns-toggle provider DHCP

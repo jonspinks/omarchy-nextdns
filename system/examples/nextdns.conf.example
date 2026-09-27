@@ -1,0 +1,20 @@
+auto-activate false
+bogus-priv true
+cache-max-age 0s
+cache-metrics false
+cache-size 0
+control /var/run/nextdns.sock
+debug false
+detect-captive-portals false
+discovery-dns 
+hardened-privacy false
+listen localhost:53
+log-queries false
+max-inflight-requests 256
+max-ttl 0s
+mdns all
+profile <YOUR-NEXTDNS-PROFILE-ID>
+report-client-info true
+setup-router false
+timeout 5s
+use-hosts true

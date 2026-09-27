@@ -92,7 +92,9 @@ Panel {
 
   Process {
     id: statsProc
-    command: ["bash", "-lc", "~/.config/omarchy/bar/scripts/nextdns-stats"]
+    // Run from the plugin itself, as a fixed argv: `omarchy plugin update` then
+    // updates the helper along with the panel, and no shell parses the path.
+    command: [Quickshell.env("HOME") + "/.config/omarchy/plugins/blacksheep.nextdns/scripts/nextdns-stats"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -328,7 +330,7 @@ Panel {
         Text {
           width: parent.width
           visible: !root.installed
-          text: "nextdns-toggle is not installed. Install the scripts and the sudoers rule from ~/Work, then this panel becomes live."
+          text: "nextdns-toggle is not installed. Run install.sh in the plugin folder (see the README), then this panel becomes live."
           wrapMode: Text.WordWrap
           textFormat: Text.PlainText
           opacity: 0.6
