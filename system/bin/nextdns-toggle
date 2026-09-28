@@ -20,14 +20,31 @@ PROVIDER_FILE=$STATE_DIR/provider
 NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
 STUB=127.0.0.1
 
-mkdir -p "$STATE_DIR" 2>/dev/null
-chmod 0755 "$STATE_DIR" 2>/dev/null
-
-write_state() {
-  printf '%s\n' "$2" >"$1"
-  # The bar runs unprivileged and reads these directly to draw the widget.
-  chmod 0644 "$1" 2>/dev/null
+# Our own directories and files. A directory must be a real one owned by this
+# account (root, when installed), never a link. The lock is opened without
+# truncation (<>, not >) and never through a link. State files are written
+# through a fresh mktemp file beside them, then renamed over the name: nothing
+# planted at a predictable path is followed, truncated or waited on.
+own_dir() { # dir
+  install -d -m 0755 "$1" 2>/dev/null
+  [[ -d $1 && ! -L $1 && $(stat -c %u "$1") == "$(id -u)" ]] && chmod 0755 "$1" 2>/dev/null
 }
+open_lock() { # path: onto fd 9
+  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
+  exec 9<>"$1"
+}
+put() { # path line  (world-readable: the bar runs unprivileged and reads these)
+  local tmp
+  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
+  tmp=$(mktemp "$(dirname "$1")/.$(basename "$1").XXXXXX") || return 1
+  if printf '%s\n' "$2" >"$tmp" && chmod 0644 "$tmp" && mv -f -T "$tmp" "$1"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
+own_dir "$STATE_DIR" || { echo "$STATE_DIR is not ours" >&2; exit 1; }
+
+write_state() { put "$1" "$2" || { echo "cannot write $1" >&2; exit 1; }; }
 
 # Whether NextDNS is what the stack is actually pointed at, read from the file
 # omarchy-dns writes rather than from our own override -- the first click after

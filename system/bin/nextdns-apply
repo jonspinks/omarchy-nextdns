@@ -33,19 +33,42 @@ STUB=127.0.0.1
 # name lookup for dns.nextdns.io is exactly what does not work.
 DOH_IPS=(45.90.28.0 45.90.30.0)
 
-mkdir -p "$STATE_DIR" "$RUN_DIR" 2>/dev/null
-# World-readable: the bar runs unprivileged and reads these to draw the widget.
-chmod 0755 "$STATE_DIR" "$RUN_DIR" 2>/dev/null
+# Our own directories and files. A directory must be a real one owned by this
+# account (root, when installed), never a link. The lock is opened without
+# truncation (<>, not >) and never through a link. State files are written
+# through a fresh mktemp file beside them, then renamed over the name: nothing
+# planted at a predictable path is followed, truncated or waited on.
+own_dir() { # dir
+  install -d -m 0755 "$1" 2>/dev/null
+  [[ -d $1 && ! -L $1 && $(stat -c %u "$1") == "$(id -u)" ]] && chmod 0755 "$1" 2>/dev/null
+}
+open_lock() { # path: onto fd 9
+  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
+  exec 9<>"$1"
+}
+put() { # path line  (world-readable: the bar runs unprivileged and reads these)
+  local tmp
+  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
+  tmp=$(mktemp "$(dirname "$1")/.$(basename "$1").XXXXXX") || return 1
+  if printf '%s\n' "$2" >"$tmp" && chmod 0644 "$tmp" && mv -f -T "$tmp" "$1"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
 
-exec 9>"$LOCK"
+# World-readable: the bar runs unprivileged and reads these to draw the widget.
+own_dir "$STATE_DIR" && own_dir "$RUN_DIR" || {
+  logger -t blacksheep-nextdns "state directories are not ours; not applying"
+  exit 0
+}
+
+open_lock "$LOCK" || exit 0
 # NetworkManager fires dispatcher events in bursts and the timer can land in the
 # middle of one. Losing the race is not an error -- the winner applies the same
 # policy from the same state files a moment later.
 flock -w 30 9 || exit 0
 
 note() {
-  printf '%s\n' "$*" > "$LAST_RESULT"
-  chmod 0644 "$LAST_RESULT" 2>/dev/null
+  put "$LAST_RESULT" "$*"
   logger -t blacksheep-nextdns "$*"
 }
 
