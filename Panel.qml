@@ -60,6 +60,18 @@ Panel {
     if (!serviceUp) return "Stopped"
     return answering ? "Running" : "Running, not answering"
   }
+  // The profile's page on my.nextdns.io: its logs, allowlist and settings,
+  // for when something you want is being blocked. The id comes from the
+  // daemon's config, so it is checked before it goes into a URL.
+  readonly property string profileUrl: /^[a-z0-9]{1,32}$/.test(String(stats.profile || ""))
+    ? "https://my.nextdns.io/" + stats.profile + "/logs"
+    : "https://my.nextdns.io/"
+
+  function openDashboard() {
+    Qt.openUrlExternally(root.profileUrl)
+    root.close()
+  }
+
   function refresh() {
     if (statsProc.running) return
     statsProc.running = true
@@ -182,6 +194,7 @@ Panel {
         if (t === "r" || t === "R") root.refresh()
         else if (t === "a" || t === "A") root.runToggle("auto")
         else if (t === "n" || t === "N") root.runToggle("toggle")
+        else if (t === "o" || t === "O") root.openDashboard()
       }
 
       Column {
@@ -234,7 +247,18 @@ Panel {
           InfoValue { text: root.stats.resolver || "—"; Layout.fillWidth: true }
 
           InfoLabel { text: "Profile" }
-          InfoValue { text: root.stats.profile || "—" }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+            InfoValue { text: root.stats.profile || "—"; Layout.fillWidth: true }
+            PanelActionButton {
+              iconText: "󰏌"
+              tooltipText: "Open logs and allowlist on my.nextdns.io (o)"
+              foreground: root.bar ? root.bar.foreground : Color.foreground
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              onClicked: root.openDashboard()
+            }
+          }
 
           InfoLabel { text: "Daemon" }
           InfoValue { text: root.daemonText }

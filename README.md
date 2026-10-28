@@ -26,6 +26,9 @@ moment NextDNS is reachable again, it switches back by itself: it checks every
 
 ![A hotel network blocks NextDNS: using Cloudflare until it doesn't](screenshots/3-captive-portal.png)
 
+**Something blocked that you want?** The button next to your profile (or `o`)
+opens its logs on my.nextdns.io, where every blocked domain has an Allow button.
+
 **It fixes a stuck NextDNS.** Sometimes the NextDNS daemon stays running but
 stops answering. The widget tells that apart from a network that's blocking it,
 and simply restarts it.
