@@ -147,7 +147,10 @@ The scripts it grants are installed root-owned in
 `/usr/local/libexec/blacksheep.nextdns`, never run
 from the plugin folder, so nothing you can write is ever run as root. They keep
 their state and locks in root-owned directories, never in a shared temporary
-one. `install.sh` fills in your account name, validates the drop-in with
+one. The lock `nextdns-apply` serialises on is owner-only
+(`/run/blacksheep.nextdns/private/lock`, 0600 in a 0700 directory), so no other
+account can open it to hold it; a lock or directory that is not root-owned and
+owner-only is refused, logged, and reported as a failure rather than waited on. `install.sh` fills in your account name, validates the drop-in with
 `visudo -c` in a temporary location and only then moves it into place: a
 sudoers file that does not parse locks sudo out entirely.
 

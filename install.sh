@@ -108,7 +108,7 @@ present() { sudo test -e "$1" || sudo test -L "$1"; }
 
 # This plugin's own directories must be real, root-owned directories, and the
 # files it writes only when absent (or rewrites in place) must not be links.
-DIRS=("$LIBEXEC" "$VAR" "$RUN")
+DIRS=("$LIBEXEC" "$VAR" "$RUN" "$RUN/private")
 NOLINK=("$RECORD" "$VAR/override" "$VAR/provider" /etc/nextdns.conf "$DAEMON_UNIT")
 ours() { [[ -n ${OWNED[$1]:-} && $(sum_of "$1") == "${OWNED[$1]}" ]]; }
 
@@ -268,8 +268,9 @@ if [[ $MODE == uninstall ]]; then
   sudo systemctl daemon-reload
   sudo rmdir "$LIBEXEC" 2>/dev/null || true
   # State: only the files this plugin writes, inside its own directories.
-  sudo rm -f "$VAR/override" "$VAR/provider" "$RECORD" "$RUN/last-result" "$RUN/lock"
-  sudo rmdir "$VAR" "$RUN" 2>/dev/null || true
+  sudo rm -f "$VAR/override" "$VAR/provider" "$RECORD" "$RUN/last-result" \
+    "$RUN/lock" "$RUN/private/lock"
+  sudo rmdir "$VAR" "$RUN/private" "$RUN" 2>/dev/null || true
   cat <<'LEFT'
 
 DNS is now on the fallback resolver, set through Omarchy's own omarchy-dns.

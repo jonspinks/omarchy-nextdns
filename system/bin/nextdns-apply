@@ -20,9 +20,10 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin
 STATE_DIR=/var/lib/blacksheep.nextdns
 OVERRIDE_FILE=$STATE_DIR/override    # auto | on | off
 PROVIDER_FILE=$STATE_DIR/provider    # Cloudflare | Google | DHCP
-RUN_DIR=/run/blacksheep.nextdns
+RUN_DIR=/run/blacksheep.nextdns          # 0755: the bar reads last-result
 LAST_RESULT=$RUN_DIR/last-result
-LOCK=$RUN_DIR/lock
+LOCK_DIR=$RUN_DIR/private                # 0700: nobody else can reach the lock
+LOCK=$LOCK_DIR/lock                      # 0600
 
 NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
 OMARCHY_DNS=/usr/bin/omarchy-dns
@@ -33,18 +34,46 @@ STUB=127.0.0.1
 # name lookup for dns.nextdns.io is exactly what does not work.
 DOH_IPS=(45.90.28.0 45.90.30.0)
 
-# Our own directories and files. A directory must be a real one owned by this
-# account (root, when installed), never a link. The lock is opened without
-# truncation (<>, not >) and never through a link. State files are written
-# through a fresh mktemp file beside them, then renamed over the name: nothing
-# planted at a predictable path is followed, truncated or waited on.
-own_dir() { # dir
-  install -d -m 0755 "$1" 2>/dev/null
-  [[ -d $1 && ! -L $1 && $(stat -c %u "$1") == "$(id -u)" ]] && chmod 0755 "$1" 2>/dev/null
+# Refuse loudly: logged, on stderr, and a non-zero exit, so the toggle, the
+# timer unit and the dispatcher's transient unit all show that nothing was done.
+fail() {
+  logger -t blacksheep-nextdns -p user.err "$*"
+  echo "nextdns-apply: $*" >&2
+  exit 1
 }
+
+# Our own directories and files. A directory must be a real one owned by this
+# account (root, when installed), never a link, and is left at exactly the mode
+# asked for. The lock is opened without truncation (<>, not >) and never
+# through a link. State files are written through a fresh mktemp file beside
+# them, then renamed over the name: nothing planted at a predictable path is
+# followed, truncated or waited on.
+own_dir() { # dir mode
+  local dir=$1 mode=$2
+  if [[ ! -e $dir && ! -L $dir ]]; then
+    mkdir -m "$mode" "$dir" 2>/dev/null || return 1
+  fi
+  [[ -d $dir && ! -L $dir && $(stat -c %u "$dir") == "$(id -u)" ]] || return 1
+  chmod "0$mode" "$dir" 2>/dev/null || return 1   # 00755: clears setgid too
+  [[ $(stat -c %a "$dir") == "${mode#0}" ]]
+}
+# The lock is owner-only. flock(2) grants an exclusive lock on a descriptor
+# opened read-only, so any other account that could open the file could hold
+# it and stall every apply; with the directory at 0700 and the file at 0600
+# only root can open it at all. Checked through the open descriptor, so what
+# is verified is the file actually locked.
 open_lock() { # path: onto fd 9
-  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
-  exec 9<>"$1"
+  local mask got
+  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then
+    fail "$1 is not a regular file; not applying"
+  fi
+  mask=$(umask)
+  umask 077
+  exec 9<>"$1" || { umask "$mask"; fail "cannot open $1; not applying"; }
+  umask "$mask"
+  got=$(stat -L -c '%u %a' /proc/self/fd/9)
+  [[ $got == "$(id -u) 600" ]] ||
+    fail "$1 is not owner-only (owner uid and mode: $got); remove it and run again"
 }
 put() { # path line  (world-readable: the bar runs unprivileged and reads these)
   local tmp
@@ -55,17 +84,21 @@ put() { # path line  (world-readable: the bar runs unprivileged and reads these)
   return 1
 }
 
-# World-readable: the bar runs unprivileged and reads these to draw the widget.
-own_dir "$STATE_DIR" && own_dir "$RUN_DIR" || {
-  logger -t blacksheep-nextdns "state directories are not ours; not applying"
-  exit 0
-}
+# State and last-result are world-readable: the bar runs unprivileged and reads
+# them to draw the widget. The lock lives one level down, in a directory only
+# root can enter.
+own_dir "$STATE_DIR" 0755 || fail "$STATE_DIR is not a root-owned directory; not applying"
+own_dir "$RUN_DIR" 0755 || fail "$RUN_DIR is not a root-owned directory; not applying"
+own_dir "$LOCK_DIR" 0700 || fail "$LOCK_DIR is not a root-owned 0700 directory; not applying"
+# Earlier versions kept a world-readable lock at $RUN_DIR/lock. Nothing uses
+# it now; a holder of an old descriptor to it no longer blocks anything.
+rm -f -- "$RUN_DIR/lock"
 
-open_lock "$LOCK" || exit 0
+open_lock "$LOCK"
 # NetworkManager fires dispatcher events in bursts and the timer can land in the
-# middle of one. Losing the race is not an error -- the winner applies the same
-# policy from the same state files a moment later.
-flock -w 30 9 || exit 0
+# middle of one, so waiting a while for the lock is normal. Not getting it at
+# all is not: say so, and exit non-zero, rather than claim the policy applied.
+flock -w 30 9 || fail "could not take $LOCK within 30 s; DNS policy not applied"
 
 note() {
   put "$LAST_RESULT" "$*"

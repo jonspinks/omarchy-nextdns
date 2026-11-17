@@ -21,17 +21,18 @@ NM_DNS_CONF=/etc/NetworkManager/conf.d/20-omarchy-dns.conf
 STUB=127.0.0.1
 
 # Our own directories and files. A directory must be a real one owned by this
-# account (root, when installed), never a link. The lock is opened without
-# truncation (<>, not >) and never through a link. State files are written
-# through a fresh mktemp file beside them, then renamed over the name: nothing
-# planted at a predictable path is followed, truncated or waited on.
-own_dir() { # dir
-  install -d -m 0755 "$1" 2>/dev/null
-  [[ -d $1 && ! -L $1 && $(stat -c %u "$1") == "$(id -u)" ]] && chmod 0755 "$1" 2>/dev/null
-}
-open_lock() { # path: onto fd 9
-  if [[ -L $1 ]] || { [[ -e $1 ]] && [[ ! -f $1 ]]; }; then return 1; fi
-  exec 9<>"$1"
+# account (root, when installed), never a link, and is left at exactly the mode
+# asked for. State files are written through a fresh mktemp file beside them,
+# then renamed over the name: nothing planted at a predictable path is followed
+# or truncated. The lock is nextdns-apply's alone; this script takes none.
+own_dir() { # dir mode
+  local dir=$1 mode=$2
+  if [[ ! -e $dir && ! -L $dir ]]; then
+    mkdir -m "$mode" "$dir" 2>/dev/null || return 1
+  fi
+  [[ -d $dir && ! -L $dir && $(stat -c %u "$dir") == "$(id -u)" ]] || return 1
+  chmod "0$mode" "$dir" 2>/dev/null || return 1   # 00755: clears setgid too
+  [[ $(stat -c %a "$dir") == "${mode#0}" ]]
 }
 put() { # path line  (world-readable: the bar runs unprivileged and reads these)
   local tmp
@@ -42,7 +43,11 @@ put() { # path line  (world-readable: the bar runs unprivileged and reads these)
   return 1
 }
 
-own_dir "$STATE_DIR" || { echo "$STATE_DIR is not ours" >&2; exit 1; }
+own_dir "$STATE_DIR" 0755 || {
+  logger -t blacksheep-nextdns -p user.err "$STATE_DIR is not a root-owned directory; not switching"
+  echo "$STATE_DIR is not a root-owned directory" >&2
+  exit 1
+}
 
 write_state() { put "$1" "$2" || { echo "cannot write $1" >&2; exit 1; }; }
 
