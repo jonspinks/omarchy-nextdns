@@ -216,9 +216,8 @@ apply_nextdns() {
   note ""
 }
 
-apply_fallback() {
-  local want
-  want=$(provider)
+apply_fallback() { # [provider]  default: the one chosen in the panel
+  local want=${1:-$(provider)}
 
   # Move resolved off 127.0.0.1 first, stop the daemon second. The other order
   # leaves a window with the stub pointed at a dead port.
@@ -230,6 +229,13 @@ apply_fallback() {
   fi
   systemctl is-active --quiet nextdns && systemctl stop nextdns
   return 0
+}
+
+# NetworkManager's own last verdict, read rather than re-probed (no `check`):
+# the stock network panel and omarchy-network-captive-portal already re-check
+# often while a portal is up, and each change fires the dispatcher.
+behind_portal() {
+  [[ $(LC_ALL=C timeout 5 nmcli networking connectivity 2>/dev/null) == portal ]]
 }
 
 # Decide what should be true right now, and repair what is not.
@@ -250,6 +256,20 @@ policy() {
   local mode state
   mode=$(override)
   state=$(current_state)
+
+  # A captive portal NetworkManager has already spotted (the bar's "Sign in to
+  # network" prompt). Its sign-in page usually lives on a name only the
+  # network's own resolver knows, so neither NextDNS nor Cloudflare/Google can
+  # load it -- even when the portal lets DoH through and NextDNS looks healthy.
+  # Use the network's DHCP resolver until NetworkManager reports the portal
+  # gone; the dispatcher reruns this on every connectivity change.
+  if [[ $mode == auto ]] && behind_portal; then
+    if [[ $state != DHCP ]]; then
+      note "Signing in to this network — using its own DNS until you are through"
+      apply_fallback DHCP
+    fi
+    return 0
+  fi
 
   if [[ $state == nextdns ]]; then
     dns_probe "$STUB" 3 && { note ""; return 0; }
